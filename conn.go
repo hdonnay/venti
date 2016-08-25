@@ -172,7 +172,7 @@ func (c *conn) Close() error {
 //
 // If passed 'goodbye', end the connection.
 func (c *conn) Err(e error) {
-	if e == goodbye {
+	if e == errGoodbye {
 		c.Close()
 		return
 	}
@@ -232,16 +232,14 @@ func (c *conn) handle() error {
 			Data: rd,
 		}
 	case msg.KindTsync:
-		t := &msg.Tsync{}
-		if _, err := t.Write(buf.Bytes()); err != nil {
-			return err
-		}
 		if err := c.h.Sync(); err != nil {
 			return err
 		}
-		r = &msg.Rsync{Tag: t.Tag}
+		r = &msg.Rsync{Tag: buf.Next(1)[0]}
 	case msg.KindTgoodbye:
-		return goodbye
+		return errGoodbye
+	case msg.KindTping:
+		r = &msg.Rping{Tag: buf.Next(1)[0]}
 	default:
 		return fmt.Errorf("unexpected type %x", kind)
 	}
