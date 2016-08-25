@@ -144,6 +144,7 @@ func (w *Chunker) New() io.WriteCloser {
 //
 // We only support venti v04 compatable packets.
 type Dechunker struct {
+	sync.Mutex
 	r      *bufio.Reader
 	remain int
 }
@@ -158,6 +159,8 @@ func Dechunk(r io.Reader) *Dechunker {
 
 // Line reads until the next '\n'. Used for the initial version exchange.
 func (d *Dechunker) Line() (string, error) {
+	d.Lock()
+	defer d.Unlock()
 	return d.r.ReadString('\n')
 }
 
@@ -165,6 +168,8 @@ func (d *Dechunker) Line() (string, error) {
 //
 // A Read call after an io.EOF is returned will read the next packet.
 func (d *Dechunker) Read(b []byte) (int, error) {
+	d.Lock()
+	defer d.Unlock()
 	if d.remain == 0 {
 		d.remain--
 		return 0, io.EOF

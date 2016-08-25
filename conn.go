@@ -50,12 +50,11 @@ func doneBuffer(b *bytes.Buffer) {
 
 type conn struct {
 	net.Conn
-
-	rmu sync.Mutex
-	r   *pack.Dechunker
-
+	// These have their own mutexes, just don't end-around them.
+	r *pack.Dechunker
 	w *pack.Chunker
 
+	// This is the user-supplied function and the Handler derived from it.
 	hs Handshake
 	h  Handler
 }
@@ -157,10 +156,7 @@ func (c *conn) handshake(cv string) (Handler, error) {
 // The returned *bytes.Buffer should be passed to doneBuffer() when done.
 // A valid Buffer is always returned, and always needs to be done'd.
 func (c *conn) readPacket() (*bytes.Buffer, error) {
-	c.rmu.Lock()
-	defer c.rmu.Unlock()
 	buf := newBuffer()
-
 	if _, err := io.Copy(buf, c.r); err != nil {
 		return buf, err
 	}
