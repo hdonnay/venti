@@ -23,3 +23,13 @@ func Serve(l net.Listener, h Handshake) error {
 		go accept(conn, h)
 	}
 }
+
+// ListenAndServe listens on the TCP address "addr" and calls Serve on the
+// resulting net.Listener.
+func ListenAndServe(addr string, h Handshake) error {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return Serve(l, h)
+}
