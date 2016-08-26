@@ -7,6 +7,10 @@ package venti
 
 import "fmt"
 
+var vers = []string{"04"}
+
+const verComment = "hdonnay/venti"
+
 // MaxFileSize is the biggest file venti supports.
 const MaxFileSize = (1 << 48) - 1
 

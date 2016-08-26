@@ -27,14 +27,11 @@ var (
 	// down.
 	errGoodbye = fmt.Errorf("goodbye")
 
-	serverV = []byte("venti-04-hdonnay/venti\n")
-
 	bufferPool sync.Pool
 )
 
 const (
 	initBufSz = 4096
-	versions  = "04"
 )
 
 func newBuffer() *bytes.Buffer {
@@ -66,28 +63,27 @@ func accept(nc net.Conn, h Handshake) {
 		w:    pack.Chunk(nc),
 		hs:   h,
 	}
+	defer c.Close()
 
 	// The venti protocol starts with the exchanging of the strings.
 	clientV, err := c.r.Line()
 	if err != nil {
-		c.Err(err)
 		return
 	}
-	if _, err := c.Conn.Write(serverV); err != nil {
-		c.Err(err)
+	buf := &bytes.Buffer{}
+	fmt.Fprintf(buf, "venti-%s-%s\n", strings.Join(vers, ":"), verComment)
+	if _, err := io.Copy(c.Conn, buf); err != nil {
 		return
 	}
 
 	// The handshake function handles the initial Thello/Rhello messages.
 	c.h, err = c.handshake(clientV)
 	if err != nil {
-		c.Err(err)
 		return
 	}
 
 	for {
 		if err := c.handle(); err != nil {
-			c.Err(err)
 			return
 		}
 	}
@@ -96,7 +92,7 @@ func accept(nc net.Conn, h Handshake) {
 func (c *conn) handshake(cv string) (Handler, error) {
 	ok := false
 	for _, v := range ParseVersion(cv) {
-		if strings.Contains(versions, v) {
+		if strings.Contains(strings.Join(vers, ""), v) {
 			ok = true
 			break
 		}
@@ -113,10 +109,13 @@ func (c *conn) handshake(cv string) (Handler, error) {
 	}
 
 	if k := buf.Next(1)[0]; k != msg.KindThello {
-		return nil, fmt.Errorf("expected Thello, got %x", k)
+		err := fmt.Errorf("expected Thello, got %x", k)
+		c.Err(buf.Next(1)[0], err)
+		return nil, err
 	}
 
-	if _, err := buf.ReadFrom(th); err != nil {
+	if _, err := io.Copy(th, buf); err != nil {
+		c.Err(th.Tag, err)
 		return nil, err
 	}
 
@@ -127,6 +126,7 @@ func (c *conn) handshake(cv string) (Handler, error) {
 		Codec:    th.Codec,
 	})
 	if err != nil {
+		c.Err(th.Tag, err)
 		return nil, err
 	}
 
@@ -146,6 +146,7 @@ func (c *conn) handshake(cv string) (Handler, error) {
 	out := c.w.New()
 	defer out.Close()
 	if _, err := io.Copy(out, rh); err != nil {
+		c.Err(th.Tag, err)
 		return nil, err
 	}
 	return h, nil
@@ -171,14 +172,17 @@ func (c *conn) Close() error {
 // Construct an Rerror packet and send it.
 //
 // If passed 'goodbye', end the connection.
-func (c *conn) Err(e error) {
+func (c *conn) Err(tag uint8, e error) {
 	if e == errGoodbye {
 		c.Close()
 		return
 	}
 	out := c.w.New()
 	defer out.Close()
-	io.Copy(out, &msg.Rerror{Err: e.Error()})
+	io.Copy(out, &msg.Rerror{
+		Tag: tag,
+		Err: e.Error(),
+	})
 }
 
 func (c *conn) handle() error {
@@ -197,6 +201,7 @@ func (c *conn) handle() error {
 	}
 	switch kind {
 	case msg.KindThello:
+		c.Err(buf.Next(1)[0], errUnexpectedHello)
 		return errUnexpectedHello
 	case msg.KindTwrite:
 		t := &msg.Twrite{}
@@ -207,6 +212,7 @@ func (c *conn) handle() error {
 		buf.Next(n)
 		score, err := c.h.Write(Type(t.Type), buf)
 		if err != nil {
+			c.Err(t.Tag, err)
 			return err
 		}
 		r = &msg.Rwrite{
@@ -225,6 +231,7 @@ func (c *conn) handle() error {
 			}
 		}()
 		if err != nil {
+			c.Err(t.Tag, err)
 			return err
 		}
 		r = &msg.Rread{
@@ -232,16 +239,20 @@ func (c *conn) handle() error {
 			Data: rd,
 		}
 	case msg.KindTsync:
+		tag := buf.Next(1)[0]
 		if err := c.h.Sync(); err != nil {
+			c.Err(tag, err)
 			return err
 		}
-		r = &msg.Rsync{Tag: buf.Next(1)[0]}
+		r = &msg.Rsync{Tag: tag}
 	case msg.KindTgoodbye:
 		return errGoodbye
 	case msg.KindTping:
 		r = &msg.Rping{Tag: buf.Next(1)[0]}
 	default:
-		return fmt.Errorf("unexpected type %x", kind)
+		err := fmt.Errorf("unexpected type %x", kind)
+		c.Err(buf.Next(1)[0], err)
+		return err
 	}
 
 	out := c.w.New()

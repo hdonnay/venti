@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"log"
 	"sync"
 )
 
@@ -100,16 +101,16 @@ var (
 //
 // We only emit venti v04 compatable packets.
 type Chunker struct {
-	sync.Mutex
-	w io.Writer
+	mu     *sync.Mutex
+	w      io.Writer
+	Chatty bool
 }
 
 // cw buffers all writes until closed, then determines the length written,
 // secures the lock, and writes the buffered data.
 type cw struct {
 	bytes.Buffer
-	Mu *sync.Mutex
-	W  io.Writer
+	c *Chunker
 }
 
 func (w *cw) Close() error {
@@ -117,14 +118,21 @@ func (w *cw) Close() error {
 	b := make([]byte, 4)
 
 	be.PutUint32(b, uint32(w.Buffer.Len()))
-	_, err := io.Copy(w.W, io.MultiReader(bytes.NewReader(b), &w.Buffer))
+	if w.c.Chatty {
+		bb := w.Buffer.Bytes()
+		log.Printf("<- len:%d kind:%x tag:%x\n", w.Buffer.Len(), bb[0], bb[1])
+	}
+	w.c.mu.Lock()
+	defer w.c.mu.Unlock()
+	_, err := io.Copy(w.c.w, io.MultiReader(bytes.NewReader(b), &w.Buffer))
 	return err
 }
 
 // Chunk returns a Chunker that writes to 'w'.
 func Chunk(w io.Writer) *Chunker {
 	return &Chunker{
-		w: w,
+		mu: &sync.Mutex{},
+		w:  w,
 	}
 }
 
@@ -134,8 +142,7 @@ func (w *Chunker) New() io.WriteCloser {
 	b := pktPool.Get().(*bytes.Buffer)
 	return &cw{
 		Buffer: *b,
-		Mu:     &w.Mutex,
-		W:      w.w,
+		c:      w,
 	}
 }
 
@@ -147,6 +154,7 @@ type Dechunker struct {
 	sync.Mutex
 	r      *bufio.Reader
 	remain int
+	Chatty bool
 }
 
 // Dechunk return a Dechunker reading from 'r'.
@@ -188,6 +196,9 @@ func (d *Dechunker) Read(b []byte) (int, error) {
 			goto Try
 		}
 		d.remain = int(binary.BigEndian.Uint32(b[:4]))
+		if d.Chatty {
+			log.Printf("-> len:%d \n", d.remain)
+		}
 	}
 
 	if len(b) > d.remain {
