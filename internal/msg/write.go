@@ -60,6 +60,16 @@ func (m *Rwrite) Read(b []byte) (int, error) {
 	return sz, io.EOF
 }
 
+func (m *Rwrite) UnmarshalBinary(b []byte) error {
+	if len(b) < 21 {
+		return fmt.Errorf("not enough bytes")
+	}
+	m.Tag = b[0]
+	m.Score = make([]byte, len(b)-1)
+	copy(m.Score, b[1:])
+	return nil
+}
+
 func (m *Rwrite) Write(b []byte) (int, error) {
 	if len(b) < 21 {
 		return 0, io.ErrShortWrite

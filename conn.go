@@ -225,11 +225,9 @@ func (c *conn) handle() error {
 			return err
 		}
 		rd, err := c.h.Read(Score(t.Score), Type(t.Type), int64(t.Count))
-		defer func() {
-			if pr, ok := rd.(PoolReader); ok {
-				pr.Done()
-			}
-		}()
+		if rc, ok := rd.(io.ReadCloser); ok {
+			defer rc.Close()
+		}
 		if err != nil {
 			c.Err(t.Tag, err)
 			return err

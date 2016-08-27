@@ -71,9 +71,14 @@ func (c *Client) recv() {
 		default:
 		}
 		buf := c.newBuf()
-		if _, err := io.Copy(buf, c.r); err != nil {
+		n, err := io.Copy(buf, c.r)
+		if err != nil {
 			c.err = err
 			return
+		}
+		if n == 0 {
+			c.doneBuf(buf)
+			continue
 		}
 		tag := buf.Bytes()[1]
 		// Send is a channel send and clunk
@@ -141,26 +146,86 @@ func (c *Client) hello() error {
 }
 
 func (c *Client) goodbye() error {
-	tag, _ := c.ts.New()
-	t := &msg.Tgoodbye{Tag: tag}
+	// we never get a response, the tags doesn't matter
+	t := &msg.Tgoodbye{Tag: 0x42}
 	w := c.w.New()
 	defer w.Close()
 	if _, err := io.Copy(w, t); err != nil {
-		c.ts.Clunk(tag)
 		return err
 	}
 	return nil
 }
 
-func (c *Client) Read(t Type, s Score) (io.Reader, error) {
-	return nil, nil
+func (c *Client) Read(t Type, s Score, ct int64) (io.ReadCloser, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	if ct < 0 {
+		return nil, fmt.Errorf("bad count")
+	}
+	tag, res := c.ts.New()
+	tr := &msg.Tread{
+		Tag:   tag,
+		Score: s,
+		Type:  byte(t),
+		Count: uint32(ct),
+	}
+
+	w := c.w.New()
+	if _, err := io.Copy(w, tr); err != nil {
+		c.ts.Clunk(tag)
+		return nil, err
+	}
+	w.Close()
+
+	buf := <-res
+	// can't defer putting the buffer back automatically
+	if err := want(msg.KindRread, buf); err != nil {
+		return nil, err
+	}
+	buf.Next(1) // discard the tag
+
+	return poolCloser(c, buf), nil
 }
 
 func (c *Client) Write(t Type, r io.Reader) (Score, error) {
-	return nil, nil
+	if c.err != nil {
+		return nil, c.err
+	}
+	tag, res := c.ts.New()
+	tw := &msg.Twrite{
+		Tag:  tag,
+		Type: byte(t),
+	}
+
+	w := c.w.New()
+	if _, err := io.Copy(w, tw); err != nil {
+		c.ts.Clunk(tag)
+		return nil, err
+	}
+	if _, err := io.Copy(w, r); err != nil {
+		c.ts.Clunk(tag)
+		return nil, err
+	}
+	w.Close()
+
+	buf := <-res
+	defer c.doneBuf(buf)
+	if err := want(msg.KindRwrite, buf); err != nil {
+		return nil, err
+	}
+	rw := &msg.Rwrite{}
+	if err := rw.UnmarshalBinary(buf.Bytes()); err != nil {
+		return nil, err
+	}
+
+	return Score(rw.Score), nil
 }
 
 func (c *Client) Ping() error {
+	if c.err != nil {
+		return c.err
+	}
 	tag, r := c.ts.New()
 
 	t := &msg.Tping{Tag: tag}
@@ -182,6 +247,9 @@ func (c *Client) Ping() error {
 }
 
 func (c *Client) Sync() error {
+	if c.err != nil {
+		return c.err
+	}
 	tag, r := c.ts.New()
 
 	t := &msg.Tsync{Tag: tag}
@@ -229,8 +297,10 @@ func (t *tagset) New() (uint8, chan *bytes.Buffer) {
 	// There might be a problem if we attempt more than 256 requests in-flight
 	t.Lock()
 	defer t.Unlock()
-	lp := t.next
-	for t.next++; t.next != lp; t.next++ {
+	// The Plan 9 libventi is a stickler for the client to start at 0x00, which
+	// seems like it shouldn't matter?
+	lp := t.next - 1
+	for ; t.next != lp; t.next++ {
 		if t.wait[t.next] == nil {
 			ch := make(chan *bytes.Buffer)
 			t.wait[t.next] = ch
@@ -273,5 +343,19 @@ func want(w byte, buf *bytes.Buffer) error {
 	default:
 		return fmt.Errorf("incoming message: wanted %x, got %x", w, h)
 	}
+	return nil
+}
+
+func poolCloser(c *Client, buf *bytes.Buffer) io.ReadCloser {
+	return &pc{*buf, c}
+}
+
+type pc struct {
+	bytes.Buffer
+	c *Client
+}
+
+func (pc *pc) Close() error {
+	pc.c.doneBuf(&pc.Buffer)
 	return nil
 }

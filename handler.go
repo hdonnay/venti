@@ -48,7 +48,7 @@ type Handler interface {
 	// Read requests the block identified by the provided score, type pair. The
 	// count argument is the maximum expected size of the response.
 	//
-	// If the supplied io.Reader satifies the PoolReader interface, Put will be
+	// If the supplied io.Reader satifies the io.ReadCloser interface, Close will be
 	// called when its consumed.
 	Read(score Score, kind Type, count int64) (io.Reader, error)
 
@@ -63,11 +63,4 @@ type Handler interface {
 	// Sync is called when the client has requested that the previous writes be
 	// persisted. It should delay returning until this is done.
 	Sync() error
-}
-
-// PoolReader is used to recycle the io.Reader returned by (Handler).Read if
-// possible.
-type PoolReader interface {
-	io.Reader
-	Done()
 }
